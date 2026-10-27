@@ -2,11 +2,12 @@ try { require('dotenv').config(); } catch (e) {}
 const WebSocket = require('ws');
 const fs = require('fs');
 const http = require('http');
+const https = require('https'); // Dùng https để gọi URL public của Render
 
-// Lấy PORT từ biến môi trường của host hoặc mặc định 8080
+// Lấy PORT từ biến môi trường của Render
 const PORT = process.env.PORT || 8080;
 
-// Tạo HTTP server đơn giản để đáp ứng healthcheck của host (Railway, Render...)
+// Tạo HTTP server đáp ứng healthcheck nội bộ
 http.createServer((req, res) => {
     if (req.url === '/health' || req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -19,12 +20,30 @@ http.createServer((req, res) => {
     console.log(`[HTTP] Server keep-alive đang chạy trên cổng ${PORT}`);
 });
 
-// Tự động ping lại chính mình mỗi 3 phút để duy trì kết nối
+// Tự động lấy URL public do Render cung cấp sẵn qua biến môi trường
+const EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
+if (EXTERNAL_URL) {
+    console.log(`[+] Đã nhận diện URL Public của Render: ${EXTERNAL_URL}`);
+} else {
+    console.log(`[-] Lưu ý: Không tìm thấy RENDER_EXTERNAL_URL (chỉ chạy nội bộ).`);
+}
+
+// Cơ chế tự ping chống ngủ (Chạy mỗi 3 phút / lần = 180000 ms)
 setInterval(() => {
+    // 1. Ping nội bộ để giữ tiến trình
     http.get(`http://127.0.0.1:${PORT}/health`, () => {}).on('error', () => {});
+
+    // 2. Ping trực tiếp vào URL Public của Render để đánh thức hệ thống từ bên ngoài
+    if (EXTERNAL_URL) {
+        https.get(`${EXTERNAL_URL}/health`, (res) => {
+            // Đã tự ping thành công, giữ service luôn tỉnh táo
+        }).on('error', (err) => {
+            // Bỏ qua lỗi kết nối tạm thời nếu có
+        });
+    }
 }, 180000);
 
-// Lấy Token từ biến môi trường của host
+// Lấy Token từ biến môi trường của Render
 const TOKEN = process.env.DISCORD_TOKEN;
 
 if (!TOKEN) {
@@ -54,7 +73,6 @@ let currentGameIndex = 0;
 let heartbeatInterval = null;
 let gameInterval = null;
 
-// Hàm kết nối Discord Gateway WebSocket
 function connectDiscord() {
     const ws = new WebSocket('wss://gateway.discord.gg/?v=9&encoding=json');
 
@@ -66,7 +84,6 @@ function connectDiscord() {
         const payload = JSON.parse(data);
         const { op, d, t } = payload;
 
-        // Opcode 10: Hello -> Bắt đầu gửi Heartbeat và Identify
         if (op === 10) {
             const { heartbeat_interval } = d;
             
@@ -102,7 +119,6 @@ function connectDiscord() {
             }));
         }
 
-        // Sự kiện READY: Đăng nhập thành công
         if (t === 'READY') {
             console.log(`[+] Đã đăng nhập thành công vào Gateway! Tài khoản hiện đã ONLINE.`);
             
@@ -131,7 +147,7 @@ function connectDiscord() {
 
                     console.log(`[+] Đã chuyển sang Game App ID: ${appId} (${currentGameIndex + 1}/${gamesToPush.length})`);
                 }
-            }, 3600000); // 1 giờ = 3,600,000 ms
+            }, 3600000);
         }
     });
 
@@ -139,7 +155,7 @@ function connectDiscord() {
         console.log(`Kết nối bị đóng (${code}): ${reason}. Đang kết nối lại sau 5 giây...`);
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         if (gameInterval) clearInterval(gameInterval);
-        setTimeout(connectDiscord, 5000); // Tự động kết nối lại khi mất mạng/sập
+        setTimeout(connectDiscord, 5000);
     });
 
     ws.on('error', (error) => {
@@ -147,5 +163,4 @@ function connectDiscord() {
     });
 }
 
-// Khởi chạy bot
 connectDiscord();
